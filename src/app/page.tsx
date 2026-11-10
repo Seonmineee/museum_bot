@@ -26,6 +26,7 @@ export default function Home() {
 
   const [settings, setSettings] = useState<CuratorSettings>({
     apiKey: "",
+    provider: "gemini",
     searchEnabled: true,
     model: "gemini-2.5-flash",
   });
@@ -36,11 +37,13 @@ export default function Home() {
   useEffect(() => {
     try {
       const savedApiKey = localStorage.getItem("curator_gemini_api_key") || "";
+      const savedProvider = (localStorage.getItem("curator_provider") as any) || "gemini";
       const savedSearch = localStorage.getItem("curator_search_enabled");
-      const savedModel = localStorage.getItem("curator_model") || "gemini-2.5-flash";
+      const savedModel = localStorage.getItem("curator_model") || (savedProvider === "openai" ? "gpt-4o-mini" : "gemini-2.5-flash");
 
       setSettings({
         apiKey: savedApiKey,
+        provider: savedProvider,
         searchEnabled: savedSearch !== null ? savedSearch === "true" : true,
         model: savedModel,
       });
@@ -53,6 +56,7 @@ export default function Home() {
     setSettings(newSettings);
     try {
       localStorage.setItem("curator_gemini_api_key", newSettings.apiKey);
+      localStorage.setItem("curator_provider", newSettings.provider);
       localStorage.setItem("curator_search_enabled", String(newSettings.searchEnabled));
       localStorage.setItem("curator_model", newSettings.model);
     } catch (e) {
@@ -60,7 +64,6 @@ export default function Home() {
     }
   };
 
-  // 메시지 추가 시 스크롤 이동
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
@@ -87,6 +90,7 @@ export default function Home() {
         body: JSON.stringify({
           messages: newMessages,
           apiKey: settings.apiKey,
+          provider: settings.provider,
           searchEnabled: settings.searchEnabled,
           model: settings.model,
         }),
@@ -108,12 +112,8 @@ export default function Home() {
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      if (data.notice) {
-        setNotice(data.notice);
-      }
-      if (data.errorNotice) {
-        setNotice(data.errorNotice);
-      }
+      if (data.notice) setNotice(data.notice);
+      if (data.errorNotice) setNotice(data.errorNotice);
     } catch (err: any) {
       console.error("Chat Error:", err);
       const errorMessage: Message = {
@@ -153,7 +153,7 @@ export default function Home() {
         <div className="flex items-center justify-between bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800">
           <div className="flex items-center gap-1.5">
             <Info className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
-            <span>내장 모드로 실행 중입니다.</span>
+            <span>내장 모드로 실행 중입니다 (키 없이 바로 이용 가능).</span>
           </div>
           <button
             onClick={() => setIsSettingsOpen(true)}
@@ -171,17 +171,15 @@ export default function Home() {
         </div>
       )}
 
-      {/* 중앙 본문 영역: 채팅 영역 + 활동지 패널 */}
+      {/* 중앙 본문: 채팅 + 활동지 */}
       <div className="flex flex-1 overflow-hidden">
         {/* 채팅 영역 */}
         <div className="flex flex-1 flex-col overflow-hidden bg-[#fffdfa]/60">
-          {/* 메시지 스크롤 영역 */}
           <div className="flex-1 overflow-y-auto divide-y divide-[#f3ebd9]/70">
             {messages.map((message) => (
               <ChatMessage key={message.id} message={message} />
             ))}
 
-            {/* AI 생각 중 로딩 인디케이터 */}
             {isLoading && (
               <div className="flex w-full gap-3 py-3 px-3 sm:px-6">
                 <div className="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-full bg-gradient-to-br from-[#8c5b43] to-[#5e3e33] text-white shadow">
@@ -201,18 +199,17 @@ export default function Home() {
             <div ref={chatEndRef} />
           </div>
 
-          {/* 하단 질문 입력창 */}
           <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
         </div>
 
-        {/* 오른쪽 안내문 활동지 패널 */}
+        {/* 활동지 패널 */}
         <WorksheetPanel
           isOpen={isWorksheetOpen}
           onClose={() => setIsWorksheetOpen(false)}
         />
       </div>
 
-      {/* API 키 및 설정 모달 */}
+      {/* 설정 모달 */}
       <ApiKeyModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

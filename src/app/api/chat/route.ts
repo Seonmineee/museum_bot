@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CURATOR_SYSTEM_PROMPT } from "@/lib/curator-prompt";
 import { getMockCuratorResponse } from "@/lib/curator-mock";
-import { Message, GroundingMetadata } from "@/types/chat";
+import { Message, GroundingMetadata, ProviderType } from "@/types/chat";
 
 interface ChatRequestBody {
   messages: Message[];
   apiKey?: string;
+  provider?: ProviderType;
   searchEnabled?: boolean;
   model?: string;
 }
@@ -13,7 +14,7 @@ interface ChatRequestBody {
 export async function POST(req: NextRequest) {
   try {
     const body: ChatRequestBody = await req.json();
-    const { messages, apiKey: userApiKey, searchEnabled = true, model = "gemini-2.5-flash" } = body;
+    const { messages, apiKey: userApiKey, searchEnabled = true, model } = body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return NextResponse.json(
@@ -30,30 +31,81 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // API Key 우선순위: 1) 클라이언트 설정 키, 2) 환경변수 GEMINI_API_KEY
-    const apiKey = userApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+    const inputApiKey = userApiKey?.trim() || "";
+    // 제공자 판별 (sk- 로 시작하면 OpenAI, 아니면 Gemini or 환경변수 확인)
+    const isOpenAI =
+      body.provider === "openai" ||
+      inputApiKey.startsWith("sk-") ||
+      (!inputApiKey && Boolean(process.env.OPENAI_API_KEY));
 
-    // API Key가 없으면 안내 및 내장 큐레이터 엔진으로 응답
+    const apiKey = isOpenAI
+      ? inputApiKey || process.env.OPENAI_API_KEY?.trim()
+      : inputApiKey || process.env.GEMINI_API_KEY?.trim();
+
+    // API Key가 없으면 내장 큐레이터 모드
     if (!apiKey) {
       const mockResult = getMockCuratorResponse(lastMessage.content);
       return NextResponse.json({
         content: mockResult.content,
         groundingMetadata: mockResult.groundingMetadata,
         isMock: true,
-        notice: "Gemini API 키를 입력하시면 실시간 웹 검색 및 최신 모델 추론이 적용됩니다.",
+        notice: "API 키를 설정하시면 실시간 AI 모델이 직접 답변합니다.",
       });
     }
 
-    // Gemini API 호출 준비
-    // 대화 히스토리 포맷팅 (role: user / model)
+    // 1. OpenAI GPT API 호출 처리
+    if (isOpenAI) {
+      const gptModel = model || "gpt-4o-mini";
+      const openAiMessages = [
+        { role: "system", content: CURATOR_SYSTEM_PROMPT },
+        ...messages.map((m) => ({
+          role: m.role === "assistant" ? "assistant" : "user",
+          content: m.content,
+        })),
+      ];
+
+      const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: gptModel,
+          messages: openAiMessages,
+          temperature: 0.7,
+        }),
+      });
+
+      if (!gptResponse.ok) {
+        const errorData = await gptResponse.text();
+        console.error("OpenAI API Error:", errorData);
+        const mockResult = getMockCuratorResponse(lastMessage.content);
+        return NextResponse.json({
+          content: mockResult.content,
+          groundingMetadata: mockResult.groundingMetadata,
+          isMock: true,
+          errorNotice: `OpenAI API 오류 (${gptResponse.status}): ${gptResponse.statusText}`,
+        });
+      }
+
+      const gptData = await gptResponse.json();
+      let replyContent = gptData.choices?.[0]?.message?.content || "";
+      replyContent = removeEmojis(replyContent);
+
+      return NextResponse.json({
+        content: replyContent,
+        isMock: false,
+      });
+    }
+
+    // 2. Google Gemini API 호출 처리
     const contents = messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
     }));
 
-    // Google Search Grounding 도구 설정
     const tools = searchEnabled ? [{ googleSearch: {} }] : [];
-
     const requestPayload: any = {
       system_instruction: {
         parts: [{ text: CURATOR_SYSTEM_PROMPT }],
@@ -69,23 +121,17 @@ export async function POST(req: NextRequest) {
       requestPayload.tools = tools;
     }
 
-    // Gemini 모델 호출 (gemini-2.5-flash 기본, 오류 시 gemini-1.5-flash 등 지원)
     const targetModel = model || "gemini-2.5-flash";
     const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
     const apiResponse = await fetch(endpointUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestPayload),
     });
 
     if (!apiResponse.ok) {
-      const errorText = await apiResponse.text();
-      console.error("Gemini API Error Response:", errorText);
-
-      // 모델명 호환성 시도 (gemini-1.5-flash 폴백)
+      // 1.5-flash 폴백 시도
       if (targetModel !== "gemini-1.5-flash") {
         const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         const fallbackResp = await fetch(fallbackUrl, {
@@ -100,13 +146,12 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // API 오류 시 사용자 친화적인 에러 응답 및 폴백
       const mockResult = getMockCuratorResponse(lastMessage.content);
       return NextResponse.json({
         content: mockResult.content,
         groundingMetadata: mockResult.groundingMetadata,
         isMock: true,
-        errorNotice: `Gemini API 호출 중 오류가 발생하여 내장 답변을 제공합니다: ${apiResponse.statusText}`,
+        errorNotice: `Gemini API 오류 (${apiResponse.status}): ${apiResponse.statusText}`,
       });
     }
 
@@ -116,7 +161,7 @@ export async function POST(req: NextRequest) {
     console.error("Server API Error:", error);
     return NextResponse.json(
       {
-        error: "서버에서 응답을 생성하는 중 문제가 발생했습니다.",
+        error: "서버 처리 중 오류가 발생했습니다.",
         details: error?.message || String(error),
       },
       { status: 500 }
@@ -127,11 +172,8 @@ export async function POST(req: NextRequest) {
 function processGeminiSuccess(data: any) {
   const candidate = data.candidates?.[0];
   let replyText = candidate?.content?.parts?.map((p: any) => p.text || "").join("").trim() || "";
-
-  // 이모지 필터링 (규칙 10: "이모지는 쓰지 않는다" 엄격 준수)
   replyText = removeEmojis(replyText);
 
-  // Grounding 메타데이터 추출 (웹 검색 결과)
   const groundingMetadataRaw = candidate?.groundingMetadata;
   let groundingMetadata: GroundingMetadata | undefined;
 
@@ -151,10 +193,7 @@ function processGeminiSuccess(data: any) {
     }
 
     if (searchQueries.length > 0 || sources.length > 0) {
-      groundingMetadata = {
-        searchQueries,
-        sources,
-      };
+      groundingMetadata = { searchQueries, sources };
     }
   }
 
@@ -166,7 +205,6 @@ function processGeminiSuccess(data: any) {
 }
 
 function removeEmojis(text: string): string {
-  // Unicode emoji regex
   return text.replace(
     /([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g,
     ""

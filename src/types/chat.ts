@@ -17,8 +17,11 @@ export interface Message {
   isStreaming?: boolean;
 }
 
+export type ProviderType = 'gemini' | 'openai';
+
 export interface CuratorSettings {
   apiKey: string;
+  provider: ProviderType;
   searchEnabled: boolean;
   model: string;
 }
