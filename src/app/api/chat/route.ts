@@ -11,6 +11,16 @@ interface ChatRequestBody {
   model?: string;
 }
 
+// 서버 환경변수 등록 여부 확인용 (학생들에게 배너 숨김 처리)
+export async function GET() {
+  const hasOpenAI = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+  return NextResponse.json({
+    hasServerKey: hasOpenAI || hasGemini,
+    defaultProvider: hasOpenAI ? "openai" : hasGemini ? "gemini" : null,
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body: ChatRequestBody = await req.json();
@@ -32,28 +42,31 @@ export async function POST(req: NextRequest) {
     }
 
     const inputApiKey = userApiKey?.trim() || "";
-    // 제공자 판별 (sk- 로 시작하면 OpenAI, 아니면 Gemini or 환경변수 확인)
+
+    // 환경변수 우선순위:
+    // 1) 클라이언트 키가 있으면 해당 키 사용
+    // 2) 클라이언트 키가 없으면 Vercel 환경변수(OPENAI_API_KEY 또는 GEMINI_API_KEY) 자동 적용
     const isOpenAI =
-      body.provider === "openai" ||
       inputApiKey.startsWith("sk-") ||
-      (!inputApiKey && Boolean(process.env.OPENAI_API_KEY));
+      body.provider === "openai" ||
+      (!inputApiKey && Boolean(process.env.OPENAI_API_KEY?.trim()));
 
     const apiKey = isOpenAI
       ? inputApiKey || process.env.OPENAI_API_KEY?.trim()
       : inputApiKey || process.env.GEMINI_API_KEY?.trim();
 
-    // API Key가 없으면 내장 큐레이터 모드
+    // 등록된 키가 전혀 없으면 내장 큐레이터 모드
     if (!apiKey) {
       const mockResult = getMockCuratorResponse(lastMessage.content);
       return NextResponse.json({
         content: mockResult.content,
         groundingMetadata: mockResult.groundingMetadata,
         isMock: true,
-        notice: "API 키를 설정하시면 실시간 AI 모델이 직접 답변합니다.",
+        notice: "내장 모드로 실행 중입니다.",
       });
     }
 
-    // 1. OpenAI GPT API 호출 처리
+    // 1. OpenAI GPT API 호출 (선생님 키 또는 학생 키)
     if (isOpenAI) {
       const gptModel = model || "gpt-4o-mini";
       const openAiMessages = [
@@ -85,7 +98,7 @@ export async function POST(req: NextRequest) {
           content: mockResult.content,
           groundingMetadata: mockResult.groundingMetadata,
           isMock: true,
-          errorNotice: `OpenAI API 오류 (${gptResponse.status}): ${gptResponse.statusText}`,
+          errorNotice: `AI 호출 오류 (${gptResponse.status}): 잠시 후 다시 시도해 주세요.`,
         });
       }
 
@@ -99,7 +112,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Google Gemini API 호출 처리
+    // 2. Google Gemini API 호출
     const contents = messages.map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
@@ -131,7 +144,6 @@ export async function POST(req: NextRequest) {
     });
 
     if (!apiResponse.ok) {
-      // 1.5-flash 폴백 시도
       if (targetModel !== "gemini-1.5-flash") {
         const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
         const fallbackResp = await fetch(fallbackUrl, {
@@ -151,7 +163,7 @@ export async function POST(req: NextRequest) {
         content: mockResult.content,
         groundingMetadata: mockResult.groundingMetadata,
         isMock: true,
-        errorNotice: `Gemini API 오류 (${apiResponse.status}): ${apiResponse.statusText}`,
+        errorNotice: `Gemini API 호출 오류: 잠시 후 다시 시도해 주세요.`,
       });
     }
 

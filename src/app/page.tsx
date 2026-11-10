@@ -22,6 +22,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [isWorksheetOpen, setIsWorksheetOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [hasServerKey, setHasServerKey] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [settings, setSettings] = useState<CuratorSettings>({
@@ -33,7 +34,19 @@ export default function Home() {
 
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // 로컬 스토리지에서 설정 불러오기
+  // 서버 환경변수(Vercel에 등록된 선생님 API Key) 존재 여부 체크
+  useEffect(() => {
+    fetch("/api/chat")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.hasServerKey) {
+          setHasServerKey(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // 로컬 스토리지에서 개인 설정 불러오기
   useEffect(() => {
     try {
       const savedApiKey = localStorage.getItem("curator_gemini_api_key") || "";
@@ -112,7 +125,7 @@ export default function Home() {
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      if (data.notice) setNotice(data.notice);
+      if (data.notice && !hasServerKey) setNotice(data.notice);
       if (data.errorNotice) setNotice(data.errorNotice);
     } catch (err: any) {
       console.error("Chat Error:", err);
@@ -144,20 +157,20 @@ export default function Home() {
         onResetChat={handleResetChat}
         onToggleWorksheet={() => setIsWorksheetOpen(!isWorksheetOpen)}
         isWorksheetOpen={isWorksheetOpen}
-        hasApiKey={Boolean(settings.apiKey)}
+        hasApiKey={Boolean(settings.apiKey) || hasServerKey}
         searchEnabled={settings.searchEnabled}
       />
 
-      {/* 알림 배너 */}
-      {!settings.apiKey && (
-        <div className="flex items-center justify-between bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-xs text-amber-800">
+      {/* 배너: 서버 키도 없고 사용자 키도 없을 때만 로컬 안내 표시 */}
+      {!settings.apiKey && !hasServerKey && (
+        <div className="flex items-center justify-between bg-amber-50 border-b border-amber-200 px-4 py-1 text-xs text-amber-800">
           <div className="flex items-center gap-1.5">
             <Info className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
             <span>내장 모드로 실행 중입니다 (키 없이 바로 이용 가능).</span>
           </div>
           <button
             onClick={() => setIsSettingsOpen(true)}
-            className="font-bold underline hover:text-amber-900"
+            className="font-bold underline hover:text-amber-900 text-[11px]"
           >
             API 키 설정
           </button>
@@ -165,7 +178,7 @@ export default function Home() {
       )}
 
       {notice && (
-        <div className="flex items-center gap-1.5 bg-blue-50 border-b border-blue-200 px-4 py-1.5 text-xs text-blue-800">
+        <div className="flex items-center gap-1.5 bg-blue-50 border-b border-blue-200 px-4 py-1 text-xs text-blue-800">
           <AlertCircle className="h-3.5 w-3.5 text-blue-600 flex-shrink-0" />
           <span>{notice}</span>
         </div>
